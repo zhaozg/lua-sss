@@ -14,23 +14,23 @@ static int create_shares(lua_State *L)
 	uint8_t n, k;
 
 	const char* msg = luaL_checklstring(L, 1, &sz);
-	luaL_argcheck(L, sz==sss_MLEN, 1, "invalid length");
+	luaL_argcheck(L, sz%8==0, 1, "invalid length");
 
 	n = (uint8_t)luaL_checkint(L, 2);
 	k = (uint8_t)luaL_checkint(L, 3);
 	luaL_argcheck(L, n>=k && k>=1, 3, "out of range");
 
-	shares = malloc(sizeof(sss_Share)*n);
+	shares = sss_new_shares(sz, n);
 
-	sss_create_shares(shares, (const uint8_t*)msg, n, k);
+	sss_create_shares(shares, (const uint8_t*)msg, sz,  n, k);
 
 	lua_newtable(L);
 	for (k=0; k<n; k++)
 	{
-		lua_pushlstring(L, (const char*)shares[k], sss_SHARE_LEN);
+		lua_pushlstring(L, (const char*)shares[k].share, shares[0].size);
 		lua_rawseti(L, -2, k+1);
 	}
-	free(shares);
+	sss_free_shares(shares, n);
 	return 1;
 }
 
@@ -38,35 +38,45 @@ static int combine_shares(lua_State *L)
 {
 	uint8_t n, i;
 	int ret;
-	size_t sz;
 	sss_Share *shares = NULL;
-	const char *dat;
-	uint8_t restored[sss_MLEN] = {0};
+	uint8_t *restored;
 
 	luaL_checktype(L, 1, LUA_TTABLE);
 	n = lua_objlen(L, 1);
 	luaL_argcheck(L, n > 0, 1, "empty");
 
-	shares = malloc(sizeof(sss_Share)*n);
+	shares = sss_new_shares(0, n);
 	for(i=0; i<n; i++)
 	{
 		lua_rawgeti(L, 1, i + 1);
-		dat = luaL_checklstring(L, -1, &sz);
-		if (sz!=sss_SHARE_LEN)
-		{
-			free(shares);
-			luaL_argerror(L, 1, "items invalid length");
-		}
+		shares[i].share = (uint8_t*)luaL_checklstring(L, -1, &shares[i].size);
 		lua_pop(L, 1);
-		memcpy(shares[i], dat, sz);
 	}
+	if (n>1)
+	{
+		for(i=1; i<n; i++)
+		{
+			if(shares[i-1].size != shares[i].size)
+				luaL_argerror(L, 1, "items invalid length");
+		}
+	}
+
+	i = sss_SLEN_TO_MLEN(shares[0].size);
+	if (i==0)
+	{
+		return 0;
+	}
+
+	restored = malloc(i);
+	memset(restored, 0, i);
 
 	// Combine some of the shares to restore the original secret
 	ret = sss_combine_shares(restored, shares, n);
-	free(shares);
+	sss_free_shares(shares, 0);
+	free(restored);
 	if (ret==0)
 	{
-		lua_pushlstring(L, (const char*)restored, sss_MLEN);
+		lua_pushlstring(L, (const char*)restored, i);
 	}else
 		lua_pushnil(L);
 	return 1;
@@ -83,10 +93,6 @@ luaopen_sss (lua_State *L)
 
 	lua_pushliteral(L, "combine");
 	lua_pushcfunction(L, combine_shares);
-	lua_rawset(L, -3);
-
-	lua_pushliteral(L, "MLEN");
-	lua_pushinteger(L, sss_MLEN);
 	lua_rawset(L, -3);
 
   return 1;

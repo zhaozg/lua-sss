@@ -1,7 +1,7 @@
 local sss = require'sss'
 local openssl = require'openssl'
 
-local msg = openssl.random(sss.MLEN)
+local msg = openssl.random(32)
 print(openssl.hex(msg))
 
 local t = assert(sss.create(msg, 5, 3))
