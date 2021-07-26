@@ -74,12 +74,12 @@ static int combine_shares(lua_State *L)
 	// Combine some of the shares to restore the original secret
 	ret = sss_combine_shares(restored, shares, n);
 	sss_free_shares(shares, 0);
-	free(restored);
 	if (ret==0)
 	{
 		lua_pushlstring(L, (const char*)restored, i);
 	}else
 		lua_pushnil(L);
+	free(restored);
 	return 1;
 }
 
