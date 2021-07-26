@@ -15,6 +15,7 @@ static int create_shares(lua_State *L)
 
 	const char* msg = luaL_checklstring(L, 1, &sz);
 	luaL_argcheck(L, sz%8==0, 1, "invalid length");
+	luaL_argcheck(L, sz < (255 - sss_KEYSHARE_LEN) , 1, "length too long");
 
 	n = (uint8_t)luaL_checkint(L, 2);
 	k = (uint8_t)luaL_checkint(L, 3);

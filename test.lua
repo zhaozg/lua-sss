@@ -21,8 +21,7 @@ local function bin2hex(binstr)
   return table.concat(t)
 end
 
-local msg = sss.random(32)
-assert(#msg==32)
+local msg = sss.random(200)
 print(bin2hex(msg))
 
 local t = assert(sss.create(msg, 5, 3))
