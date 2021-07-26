@@ -82,6 +82,20 @@ static int combine_shares(lua_State *L)
 	return 1;
 }
 
+static int generate_random(lua_State *L)
+{
+	int n = luaL_checkint(L, 1);
+	void *buf = malloc(n);
+
+	if (randombytes(buf, n) == 0)
+		lua_pushlstring(L, buf, n);
+	else
+		lua_pushnil(L);
+
+	free(buf);
+	return 1;
+}
+
 LUALIB_API int
 luaopen_sss (lua_State *L)
 {
@@ -93,6 +107,10 @@ luaopen_sss (lua_State *L)
 
 	lua_pushliteral(L, "combine");
 	lua_pushcfunction(L, combine_shares);
+	lua_rawset(L, -3);
+
+	lua_pushliteral(L, "random");
+	lua_pushcfunction(L, generate_random);
 	lua_rawset(L, -3);
 
   return 1;
