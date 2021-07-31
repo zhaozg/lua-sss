@@ -7,6 +7,10 @@
 #include <lua.h>
 #include <lualib.h>
 
+#if LUA_VERSION_NUM > 501
+#define lua_objlen lua_rawlen
+#endif
+
 static int create_shares(lua_State *L)
 {
 	size_t sz;
@@ -17,8 +21,8 @@ static int create_shares(lua_State *L)
 	luaL_argcheck(L, sz%8==0, 1, "invalid length");
 	luaL_argcheck(L, sz < (255 - sss_KEYSHARE_LEN) , 1, "length too long");
 
-	n = (uint8_t)luaL_checkint(L, 2);
-	k = (uint8_t)luaL_checkint(L, 3);
+	n = (uint8_t)luaL_checkinteger(L, 2);
+	k = (uint8_t)luaL_checkinteger(L, 3);
 	luaL_argcheck(L, n>=k && k>=1, 3, "out of range");
 
 	shares = sss_new_shares(sz, n);
@@ -85,7 +89,7 @@ static int combine_shares(lua_State *L)
 
 static int generate_random(lua_State *L)
 {
-	int n = luaL_checkint(L, 1);
+	int n = luaL_checkinteger(L, 1);
 	void *buf = malloc(n);
 
 	if (randombytes(buf, n) == 0)
