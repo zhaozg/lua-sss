@@ -1,4 +1,4 @@
-#include "sss/randombytes.c"
+#include "sss/randombytes/randombytes.c"
 #include "sss/sss.c"
 #include "sss/hazmat.c"
 #include "sss/tweetnacl.c"
