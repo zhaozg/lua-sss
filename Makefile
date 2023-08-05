@@ -74,6 +74,7 @@ ifneq (, $(findstring iOS, $(SYS)))
 endif
 
 #custom config
+
 ifeq (.config, $(wildcard .config))
   include .config
 endif
@@ -88,7 +89,7 @@ WARN_MOST	 = $(WARN) -W -Waggregate-return -Wcast-align -Wmissing-prototypes    
 		   -Wnested-externs -Wshadow -Wwrite-strings -pedantic
 CFLAGS		+= -g $(WARN_MIN) -DPTHREADS
 
-OBJS=sss.o
+OBJS += sss.o
 
 .PHONY: all install test info doc
 
@@ -121,6 +122,6 @@ test:	all
 	cd test && LUA_CPATH=../?.so $(LUA) test.lua && cd ..
 
 clean:
-	rm -f $T.so lib$T.a $(OBJS)
+	rm -f $T.so lib$T.a *.o $(OBJS)
 
 # vim: ts=8 sw=8 noet

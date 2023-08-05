@@ -10,7 +10,7 @@ local function bin2hex(binstr)
   return table.concat(t)
 end
 
-local msg = sss.random(256)
+local msg = sss.random(32)
 print('msg', bin2hex(msg))
 
 local t = assert(sss.create(msg, 5, 3))
@@ -19,7 +19,7 @@ for i=1, #t do
 end
 table.remove(t)
 table.remove(t)
-local rec = assert(sss.combine(t));
+local rec = assert(sss.combine(t, 32));
 
 print('rec', bin2hex(rec))
 assert(rec==msg)
