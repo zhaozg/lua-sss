@@ -1,122 +1,267 @@
-#include "sss/randombytes.c"
-#include "sss/sss.c"
-#include "sss/hazmat.c"
-#include "sss/tweetnacl.c"
-
 #include <lauxlib.h>
 #include <lua.h>
 #include <lualib.h>
+
+#include <stdlib.h>
+#include <stdint.h>
+#include <time.h>
 
 #if LUA_VERSION_NUM > 501
 #define lua_objlen lua_rawlen
 #endif
 
+#if !defined(USE_OPENSSL)
+
+#define IRREDUCTIBLE_POLY 0x011b
+
+static uint8_t **MULTIPLICATIVE_INVERSE_TABLE = NULL;
+
+// Add two polynomials in GF(2^8)
+inline static uint8_t p_add(uint8_t a, uint8_t b) {
+  return a ^ b;
+}
+
+// Multiply a polynomial by x in GF(2^8)
+inline static uint8_t time_x(uint8_t a) {
+  if ((a >> 7) & 0x1) {
+    return (a << 1) ^ IRREDUCTIBLE_POLY;
+  } else {
+    return (a << 1);
+  }
+}
+
+inline static uint8_t time_x_power(uint8_t a, uint8_t x_power) {
+  uint8_t res = a;
+  for (; x_power > 0; x_power--) {
+    res = time_x(res);
+  }
+  return res;
+}
+
+// Multiply two polynomials in GF(2^8)
+inline static uint8_t p_mul(uint8_t a, uint8_t b) {
+  uint8_t res = 0;
+  for (int degree = 7; degree >= 0; degree--) {
+    if ((b >> degree) & 0x1) {
+      res = p_add(res, time_x_power(a, degree));
+    }
+  }
+  return res;
+}
+
+inline static uint8_t p_inv(uint8_t a) {
+
+  // Build the table so that table[a][1] = inv(a)
+  if (MULTIPLICATIVE_INVERSE_TABLE == NULL) {
+    MULTIPLICATIVE_INVERSE_TABLE = (uint8_t **) malloc(256 * sizeof(uint8_t *));
+    for (int row = 0; row < 256; row++) {
+      MULTIPLICATIVE_INVERSE_TABLE[row] = (uint8_t *) malloc(256 * sizeof(uint8_t));
+
+      for (int col = 0; col < 256; col++) {
+        MULTIPLICATIVE_INVERSE_TABLE[row][p_mul(row, col)] = col;
+      }
+    }
+  }
+
+  return MULTIPLICATIVE_INVERSE_TABLE[a][1];
+}
+
+// Divide two polynomials in GF(2^8)
+inline static uint8_t p_div(uint8_t a, uint8_t b) {
+  return p_mul(a, p_inv(b));
+}
+
+inline static uint8_t rand_byte() {
+  return rand() % 0xff;
+}
+
+inline static uint8_t * make_random_poly(int degree, uint8_t secret) {
+  uint8_t *poly = malloc((degree + 1) * sizeof(uint8_t));
+  for (; degree > 0; degree--) {
+    poly[degree] = rand_byte();
+  }
+  poly[0] = secret;
+  return poly;
+}
+
+inline static uint8_t poly_eval(uint8_t *poly, int degree , uint8_t x) {
+  uint8_t res = 0;
+  for (; degree >= 0; degree--) {
+    uint8_t coeff = poly[degree];
+    uint8_t term = 0x01;
+    for (int times = degree; times > 0; times--) {
+      term = p_mul(term, x);
+    }
+    res = p_add(res, p_mul(coeff, term));
+  }
+  return res;
+}
+
+// Interpolate a (k-1) degree polynomial and evaluate it at x = 0
+inline static uint8_t poly_interpolate(uint8_t *xs, uint8_t *ys, int k) {
+  uint8_t res = 0;
+
+  for (int j = 0; j < k; j++) {
+    uint8_t prod = 0x01;
+    for (int m = 0; m < k; m++) {
+      if (m != j) {
+        prod = p_mul(prod, p_div(xs[m], p_add(xs[m], xs[j])));
+      }
+    }
+    res = p_add(res, p_mul(ys[j], prod));
+  }
+  return res;
+}
+
+inline static uint8_t ** split(uint8_t *secret, int secret_size, int n, int k) {
+  // n rows x (secret_size + 1) cols matrix
+  uint8_t **shares = malloc(n * sizeof(uint8_t *));
+  for (int i = 0; i < n; i++) {
+    shares[i] = malloc((secret_size + 1) * sizeof(uint8_t));
+
+    // x
+    shares[i][0] = rand_byte();
+  }
+
+  for (int secret_idx = 0; secret_idx < secret_size; secret_idx++) {
+    uint8_t *poly = make_random_poly(k-1, secret[secret_idx]);
+
+    // Evaluate poly on every one of the n x points
+    for (int i = 0; i < n; i++) {
+      shares[i][secret_idx + 1] = poly_eval(poly, k-1, shares[i][0]);
+    }
+  }
+
+  return shares;
+}
+
+inline static uint8_t * join(uint8_t **shares, int secret_size, int k) {
+  uint8_t *secret = malloc(secret_size * sizeof(uint8_t));
+
+  for (int secret_idx = 1; secret_idx <= secret_size; secret_idx++) {
+    uint8_t *xs = (uint8_t *) malloc(k * sizeof(uint8_t));
+    uint8_t *ys = (uint8_t *) malloc(k * sizeof(uint8_t));
+    for (int i = 0; i < k; i++) {
+      xs[i] = shares[i][0];
+      ys[i] = shares[i][secret_idx];
+
+      secret[secret_idx-1] = poly_interpolate(xs, ys, k);
+    }
+  }
+
+  return secret;
+}
+
+#endif
+
 static int create_shares(lua_State *L)
 {
-	size_t sz;
-	sss_Share *shares = NULL;
-	uint8_t n, k;
+  size_t sz;
+  uint8_t n, k;
 
-	const char* msg = luaL_checklstring(L, 1, &sz);
-	luaL_argcheck(L, sz%8==0, 1, "invalid length");
-	luaL_argcheck(L, sz < (255 - sss_KEYSHARE_LEN) , 1, "length too long");
+  const char* secret = luaL_checklstring(L, 1, &sz);
 
-	n = (uint8_t)luaL_checkinteger(L, 2);
-	k = (uint8_t)luaL_checkinteger(L, 3);
-	luaL_argcheck(L, n>=k && k>=1, 3, "out of range");
+  n = (uint8_t)luaL_checkinteger(L, 2);
+  k = (uint8_t)luaL_checkinteger(L, 3);
 
-	shares = sss_new_shares(sz, n);
+  luaL_argcheck(L, n>=k && k>1, 3, "out of range");
 
-	sss_create_shares(shares, (const uint8_t*)msg, sz,  n, k);
-
-	lua_newtable(L);
-	for (k=0; k<n; k++)
-	{
-		lua_pushlstring(L, (const char*)shares[k].share, shares[0].size);
-		lua_rawseti(L, -2, k+1);
-	}
-	sss_free_shares(shares, n);
-	return 1;
+#if !defined(USE_OPENSSL)
+  uint8_t **shares = split((uint8_t*)secret, sz, n, k);
+  if (shares != NULL)
+  {
+    lua_newtable(L);
+    for (k=0; k<n; k++)
+    {
+      lua_pushlstring(L, (const char*)shares[k], sz+1);
+      lua_rawseti(L, -2, k+1);
+      free(shares[k]);
+    }
+    free(shares);
+    return 1;
+  }
+  else
+    lua_pushnil(L);
+#else
+#endif
+  return 1;
 }
 
 static int combine_shares(lua_State *L)
 {
-	uint8_t n, i;
-	int ret;
-	sss_Share *shares = NULL;
-	uint8_t *restored;
+  uint8_t n, i;
+  int size = 0;
+  uint8_t *restored;
+  uint8_t **shares;
 
-	luaL_checktype(L, 1, LUA_TTABLE);
-	n = lua_objlen(L, 1);
-	luaL_argcheck(L, n > 0, 1, "empty");
+  luaL_checktype(L, 1, LUA_TTABLE);
+  n = lua_objlen(L, 1);
+  luaL_argcheck(L, n > 0, 1, "empty table");
 
-	shares = sss_new_shares(0, n);
-	for(i=0; i<n; i++)
-	{
-		lua_rawgeti(L, 1, i + 1);
-		shares[i].share = (uint8_t*)luaL_checklstring(L, -1, &shares[i].size);
-		lua_pop(L, 1);
-	}
-	if (n>1)
-	{
-		for(i=1; i<n; i++)
-		{
-			if(shares[i-1].size != shares[i].size)
-				luaL_argerror(L, 1, "items invalid length");
-		}
-	}
+#if !defined(USE_OPENSSL)
+  shares = (uint8_t **) malloc(n * sizeof(void*));
+  for(i=0; i<n; i++)
+  {
+    size_t sz;
+    lua_rawgeti(L, 1, i + 1);
+    shares[i] = (uint8_t*) luaL_checklstring(L, -1, &sz);
+    lua_pop(L, 1);
+    if (i==0)
+      size = sz;
+    else
+      luaL_argcheck(L, size==sz, 1, "partial secret length mismatch");
+  }
+  restored = join(shares, size, n);
+  if(restored != NULL)
+    lua_pushlstring(L, (const char*)restored, size-1);
+  else
+    lua_pushnil(L);
 
-	i = sss_SLEN_TO_MLEN(shares[0].size);
-	if (i==0)
-	{
-		return 0;
-	}
-
-	restored = malloc(i);
-	memset(restored, 0, i);
-
-	// Combine some of the shares to restore the original secret
-	ret = sss_combine_shares(restored, shares, n);
-	sss_free_shares(shares, 0);
-	if (ret==0)
-	{
-		lua_pushlstring(L, (const char*)restored, i);
-	}else
-		lua_pushnil(L);
-	free(restored);
-	return 1;
+  free(shares);
+  free(restored);
+#else
+#endif
+  return 1;
 }
 
 static int generate_random(lua_State *L)
 {
-	int n = luaL_checkinteger(L, 1);
-	void *buf = malloc(n);
+  int n = luaL_checkinteger(L, 1);
+  uint8_t *buf = (uint8_t*)malloc(n);
 
-	if (randombytes(buf, n) == 0)
-		lua_pushlstring(L, buf, n);
-	else
-		lua_pushnil(L);
+#if !defined(USE_OPENSSL)
+  int i;
+  for(i=0; i<n; i++)
+  {
+     buf[i] = rand_byte();
+  }
+#endif
 
-	free(buf);
-	return 1;
+  lua_pushlstring(L, (const char*)buf, n);
+  free(buf);
+  return 1;
 }
 
 LUALIB_API int
 luaopen_sss (lua_State *L)
 {
+#if !defined(USE_OPENSSL)
+  srand(time(NULL));
+#endif
+
   lua_newtable (L);
 
-	lua_pushliteral(L, "create");
-	lua_pushcfunction(L, create_shares);
-	lua_rawset(L, -3);
+  lua_pushliteral(L, "create");
+  lua_pushcfunction(L, create_shares);
+  lua_rawset(L, -3);
 
-	lua_pushliteral(L, "combine");
-	lua_pushcfunction(L, combine_shares);
-	lua_rawset(L, -3);
+  lua_pushliteral(L, "combine");
+  lua_pushcfunction(L, combine_shares);
+  lua_rawset(L, -3);
 
-	lua_pushliteral(L, "random");
-	lua_pushcfunction(L, generate_random);
-	lua_rawset(L, -3);
+  lua_pushliteral(L, "random");
+  lua_pushcfunction(L, generate_random);
+  lua_rawset(L, -3);
 
   return 1;
 }
